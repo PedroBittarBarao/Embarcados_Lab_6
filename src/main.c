@@ -17,6 +17,21 @@
 #define LED_PIO_IDX 8
 #define LED_IDX_MASK (1 << LED_PIO_IDX)
 
+#define LED3_PIO PIOB
+#define LED3_PIO_ID ID_PIOB
+#define LED3_PIO_IDX 2
+#define LED3_PIO_IDX_MASK (1 << LED3_PIO_IDX)
+
+#define LED2_PIO PIOC
+#define LED2_PIO_ID ID_PIOC
+#define LED2_PIO_IDX 30
+#define LED2_PIO_IDX_MASK (1 << LED2_PIO_IDX)
+
+#define LED1_PIO PIOA
+#define LED1_PIO_ID ID_PIOA
+#define LED1_PIO_IDX 0
+#define LED1_PIO_IDX_MASK (1 << LED1_PIO_IDX)
+
 /** RTOS  */
 #define TASK_OLED_STACK_SIZE                (1024*6/sizeof(portSTACK_TYPE))
 #define TASK_OLED_STACK_PRIORITY            (tskIDLE_PRIORITY)
@@ -31,10 +46,12 @@ int8_t mcu6050_i2c_bus_write(uint8_t dev_addr, uint8_t reg_addr, uint8_t *reg_da
 int8_t mcu6050_i2c_bus_read(uint8_t dev_addr, uint8_t reg_addr, uint8_t *reg_data, uint8_t cnt);
 
 SemaphoreHandle_t xSemaphoreHouseDown;
+QueueHandle_t xQueueDirection;
 
 /** prototypes */
 void but_callback(void);
 static void BUT_init(void);
+enum direction {ESQUERDA,FRENTE,DIREITA};
 
 
 /************************************************************************/
@@ -65,6 +82,7 @@ void mcu6050_i2c_bus_init(void)
 {
     twihs_options_t mcu6050_option;
     pmc_enable_periph_clk(ID_TWIHS2);
+	
 
     /* Configure the options of TWI driver */
     mcu6050_option.master_clk = sysclk_get_cpu_hz();
@@ -132,7 +150,7 @@ static void task_imu(void *pvParameters){
 	mcu6050_i2c_bus_init();
 
 	FusionAhrs ahrs;
-	//FusionAhrsInitialise(&ahrs); 
+	FusionAhrsInitialise(&ahrs); 
 	
 	/* buffer para recebimento de dados */
 	uint8_t bufferRX[10];
@@ -238,14 +256,14 @@ static void task_imu(void *pvParameters){
 		printf("Acc: x = %.2f; y = %.2f; z = %.2f\n",proc_acc_x,proc_acc_y,proc_acc_z);
 		printf("Gyr: x = %.2f; y = %.2f; z = %.2f\n",proc_gyr_x,proc_gyr_y,proc_gyr_z);
 
-		if (sqrt(proc_acc_x*proc_acc_x + proc_acc_y*proc_acc_y + proc_acc_z*proc_acc_z)<0.8){	
+		if (sqrt(proc_acc_x*proc_acc_x + proc_acc_y*proc_acc_y + proc_acc_z*proc_acc_z)<0.85){	
 			xSemaphoreGive(xSemaphoreHouseDown);
 		}
 
 		// uma amostra a cada 1ms
 		vTaskDelay(1);
 
-/* 		const FusionVector gyroscope = {proc_gyr_x, proc_gyr_y, proc_gyr_z}; 
+		const FusionVector gyroscope = {proc_gyr_x, proc_gyr_y, proc_gyr_z}; 
 		const FusionVector accelerometer = {proc_acc_x, proc_acc_y, proc_acc_z};    
 
 		// Tempo entre amostras
@@ -257,8 +275,23 @@ static void task_imu(void *pvParameters){
 		// dados em pitch roll e yaw
 		const FusionEuler euler = FusionQuaternionToEuler(FusionAhrsGetQuaternion(&ahrs));
 
-		printf("Roll %0.1f, Pitch %0.1f, Yaw %0.1f\n", euler.angle.roll, euler.angle.pitch, euler.angle.yaw); */
-  }
+		printf("Roll %0.1f, Pitch %0.1f, Yaw %0.1f\n", euler.angle.roll, euler.angle.pitch, euler.angle.yaw);
+
+		enum direction dir;
+		if (euler.angle.yaw<-30){
+			dir=DIREITA;
+		}
+		else if (euler.angle.yaw<30){
+			dir=FRENTE;
+		}
+		else if (euler.angle.yaw>30){
+			dir=ESQUERDA;
+		}
+
+		xQueueSend(xQueueDirection,&dir,100);
+		
+		vTaskDelay(10);
+  }	
 
 }
 
@@ -272,6 +305,32 @@ static void task_house_down(void *pvParameters){
 		}
 	}
 
+}
+
+static void task_direction(void *pvParameters){
+	enum direction dir;
+	while(1){
+		if (xQueueReceive(xQueueDirection,&dir,10)){
+			
+			pio_set(LED3_PIO,LED3_PIO_IDX_MASK);
+			pio_set(LED2_PIO,LED2_PIO_IDX_MASK);
+			pio_set(LED1_PIO,LED1_PIO_IDX_MASK);
+			if (dir==ESQUERDA){
+				pio_clear(LED3_PIO,LED3_PIO_IDX_MASK);
+				printf("LEFT\n");
+			}
+
+			else if (dir==FRENTE){
+				pio_clear(LED2_PIO,LED2_PIO_IDX_MASK);
+				printf("MIDDLE\n");
+			}
+
+			else if (dir==DIREITA){
+				pio_clear(LED1_PIO,LED1_PIO_IDX_MASK);
+				printf("RIGHT\n");
+			}
+		}
+	}
 }
 
 /************************************************************************/
@@ -298,6 +357,14 @@ static void BUT_init(void) {
 	NVIC_EnableIRQ(BUT_PIO_ID);
 	NVIC_SetPriority(BUT_PIO_ID, 4);
 
+	pmc_enable_periph_clk(LED1_PIO);
+	pmc_enable_periph_clk(LED2_PIO);
+	pmc_enable_periph_clk(LED3_PIO);
+
+	pio_configure(LED1_PIO,PIO_OUTPUT_0,LED1_PIO_IDX_MASK,1);
+	pio_configure(LED2_PIO,PIO_OUTPUT_0,LED2_PIO_IDX_MASK,1);
+	pio_configure(LED3_PIO,PIO_OUTPUT_0,LED3_PIO_IDX_MASK,1);
+
 	/* conf bot�o como entrada */
 	pio_configure(BUT_PIO, PIO_INPUT, BUT_PIO_PIN_MASK, PIO_PULLUP | PIO_DEBOUNCE);
 	pio_set_debounce_filter(BUT_PIO, BUT_PIO_PIN_MASK, 60);
@@ -314,6 +381,7 @@ int main(void) {
 	/* Initialize the SAM system */
 	sysclk_init();
 	board_init();
+	BUT_init();
 
 	/* Initialize the console uart */
 	configure_console();
@@ -330,6 +398,16 @@ int main(void) {
 	if (xTaskCreate(task_house_down, "house_down", TASK_OLED_STACK_SIZE, NULL, TASK_OLED_STACK_PRIORITY, NULL) != pdPASS) {
 	  printf("Failed to create house_down task\r\n");
 	}
+
+	if (xTaskCreate(task_direction, "direction", TASK_OLED_STACK_SIZE, NULL, TASK_OLED_STACK_PRIORITY, NULL) != pdPASS) {
+	  printf("Failed to create direction task\r\n");
+	}
+
+	xQueueDirection = xQueueCreate(100,sizeof(int));
+	if (xQueueDirection == NULL){
+		printf("falha em criar a queue xQueueDirection \n");
+	}
+
 
 	xSemaphoreHouseDown = xSemaphoreCreateBinary();
 
